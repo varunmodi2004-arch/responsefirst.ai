@@ -1,0 +1,68 @@
+name: Finalize ResponseFirst Dashboard
+
+on:
+  push:
+    branches: [final-2026-08-18]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Save exact final overlay files
+        run: |
+          set -euo pipefail
+          files=(
+            app/dashboard/layout.tsx
+            app/dashboard/leads/page.tsx
+            app/dashboard/page.tsx
+            components/ClaimCard.tsx
+            components/ClaimCardList.tsx
+            components/ClaimFieldsEditable.tsx
+            components/PipelineHeader.tsx
+            components/MorningBriefing.tsx
+            lib/briefs.ts
+            lib/claims.ts
+            lib/database.types.ts
+            lib/reports.ts
+            next-env.d.ts
+          )
+          for f in "${files[@]}"; do
+            mkdir -p "/tmp/overlay/$(dirname "$f")"
+            cp "$f" "/tmp/overlay/$f"
+          done
+
+      - name: Import complete dashboard baseline
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/varunmodi2004-arch/Responsefirst-dashboard.git /tmp/old-dashboard
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          find /tmp/old-dashboard -mindepth 1 -maxdepth 1 ! -name .git -exec cp -a {} . \;
+
+      - name: Overlay exact Phase 2C/2D final files
+        run: |
+          set -euo pipefail
+          cp -a /tmp/overlay/. .
+          rm -f components/AlertCards.tsx
+          rm -f components/NotificationBell.tsx
+          rm -f components/NotificationDropdown.tsx
+          rm -f components/StatsBar.tsx
+          rm -f "CEO Messaage"
+          rm -rf /tmp/overlay /tmp/old-dashboard .github
+
+      - name: Publish final state
+        run: |
+          set -euo pipefail
+          git config user.name "ResponseFirst Finalizer"
+          git config user.email "responsefirst.ai@gmail.com"
+          git add -A
+          git commit -m "FINAL: ResponseFirst Dashboard Phase 2C/2D - August 18 2026" || exit 0
+          git push origin HEAD:final-2026-08-18
