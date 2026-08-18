@@ -1,0 +1,536 @@
+{
+  "name": "Phase 6 - Workflow 6 - Daily Stall Detection",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "daily-8am-trigger",
+      "name": "Daily 8am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "twilio_phone_number",
+              "value": "not.is.null"
+            },
+            {
+              "name": "select",
+              "value": "id,phone,twilio_phone_number"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-live-contractors",
+      "name": "Fetch Live Contractors",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "twilio_phone_number IS NOT NULL, not onboarding_completed \u2014 the reconciliation fix from planning. onboarding_completed is never set true by anything built so far, which would otherwise match zero contractors."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "return $input.all()[0].json.map((c) => ({ json: c }));"
+      },
+      "id": "split-out-contractors",
+      "name": "Split Out Contractors",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "contractor_id",
+              "value": "=eq.{{$json.id}}"
+            },
+            {
+              "name": "stage",
+              "value": "not.in.(completed,payment_collected)"
+            },
+            {
+              "name": "select",
+              "value": "id,contractor_id,stage,stage_entered_at,is_stalled"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-open-claims",
+      "name": "Fetch Open Claims",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Carries the contractor's own id/phone onto every claim item \u2014\n// needed later since 'Split Out Contractors' won't be reachable\n// by name once execution is inside this per-claim fan-out for a\n// contractor with zero open claims (n8n doesn't run downstream\n// nodes for an empty array, so there'd be nothing to reference).\nconst contractor = $('Split Out Contractors').item.json;\nreturn $input.all()[0].json.map((claim) => ({\n  json: { ...claim, _contractorPhone: contractor.phone },\n}));"
+      },
+      "id": "split-out-claims",
+      "name": "Split Out Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const STAGE_THRESHOLDS = {claim_filed: 3, adjuster_scheduled: 7, estimate_received: 5, supplement_filed: 10, supplement_approved: 5, in_production: 14};\nconst claim = $json;\nconst daysInStage = Math.floor((Date.now() - new Date(claim.stage_entered_at).getTime()) / 86_400_000);\nconst threshold = STAGE_THRESHOLDS[claim.stage];\nconst isPastThreshold = threshold != null && daysInStage > threshold;\n// Only claims crossing threshold for the FIRST time count as\n// 'newly' stalled \u2014 one that's already flagged stays flagged\n// (and stays out of today's digest) until a stage change resets\n// it, which Phase 5's log_claim_stage_change trigger already does.\nconst isNewlyStalled = isPastThreshold && !claim.is_stalled;\n\nreturn [{ json: { ...claim, daysInStage, isPastThreshold, isNewlyStalled } }];"
+      },
+      "id": "compute-stall-status",
+      "name": "Compute Stall Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"days_in_current_stage\": $json.daysInStage, \"is_stalled\": $json.isPastThreshold, \"needs_attention\": $json.isPastThreshold, \"stall_reason\": $json.isPastThreshold ? (\"In \" + $json.stage + \" for \" + $json.daysInStage + \" days\") : null} }}",
+        "options": {}
+      },
+      "id": "update-days-in-stage",
+      "name": "Update Days In Stage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Runs for EVERY open claim, not just newly-stalled ones \u2014 days_in_current_stage refreshes daily regardless, matching the acceptance test that this updates for all open claims."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$('Compute Stall Status').item.json.isNewlyStalled}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-newly-stalled",
+      "name": "IF Newly Stalled",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claim_activities",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"claim_id\": $('Compute Stall Status').item.json.id, \"contractor_id\": $('Compute Stall Status').item.json.contractor_id, \"activity_type\": \"alert_generated\", \"description\": \"Stalled \u2014 \" + $('Compute Stall Status').item.json.stall_reason, \"source\": \"ai\"} }}",
+        "options": {}
+      },
+      "id": "insert-stall-activity",
+      "name": "Insert Stall Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        600
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('Compute Stall Status').item.json.contractor_id, \"type\": \"stalled_claim\", \"title\": \"Claim stalled\", \"body\": $('Compute Stall Status').item.json.stall_reason, \"link_type\": \"claim\", \"link_id\": $('Compute Stall Status').item.json.id, \"channels_sent\": [\"in_app\"]} }}",
+        "options": {}
+      },
+      "id": "insert-stall-notification",
+      "name": "Insert Stall Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2220,
+        600
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "in_app only here \u2014 the aggregate SMS digest below is this workflow's own responsibility, not a per-notification decision, so this row doesn't need 'sms' in channels_sent the way Workflows 7/8 do."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Collects every claim item for this contractor (both branches\n// of IF Newly Stalled converge here) back into one summary item \u2014\n// the reverse of the Split Out Claims step above.\nconst allClaims = $input.all().map((item) => item.json);\nconst newlyStalled = allClaims.filter((c) => c.isNewlyStalled);\n\nreturn [{ json: {\n  contractorPhone: allClaims[0]?._contractorPhone,\n  hasNewStalls: newlyStalled.length > 0,\n  newlyStalledClaims: newlyStalled,\n} }];"
+      },
+      "id": "aggregate-per-contractor",
+      "name": "Aggregate Per Contractor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        700
+      ],
+      "notes": "This node's input is EVERY item reaching it \u2014 both from Insert Stall Notification (newly-stalled branch) and directly from IF Newly Stalled's false output (not-stalled branch) \u2014 giving the full per-contractor picture needed for one digest."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.hasNewStalls}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-has-new-stalls",
+      "name": "IF Has New Stalls",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$vars.TWILIO_ACCOUNT_SID}}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{$json.contractorPhone}}"
+            },
+            {
+              "name": "From",
+              "value": "={{$vars.TWILIO_ALERT_NUMBER}}"
+            },
+            {
+              "name": "Body",
+              "value": "=You have {{$json.newlyStalledClaims.length}} claim(s) that just stalled: {{$json.newlyStalledClaims.map(c => c.stall_reason).join('; ')}}. Check your pipeline."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-digest-sms",
+      "name": "Send Digest SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2880,
+        700
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Exactly one SMS per contractor per run, regardless of how many claims stalled \u2014 this is the behavior the aggregate step exists to produce."
+    }
+  ],
+  "connections": {
+    "Daily 8am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Live Contractors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Live Contractors": {
+      "main": [
+        [
+          {
+            "node": "Split Out Contractors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Contractors": {
+      "main": [
+        [
+          {
+            "node": "Fetch Open Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Open Claims": {
+      "main": [
+        [
+          {
+            "node": "Split Out Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Claims": {
+      "main": [
+        [
+          {
+            "node": "Compute Stall Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Stall Status": {
+      "main": [
+        [
+          {
+            "node": "Update Days In Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Days In Stage": {
+      "main": [
+        [
+          {
+            "node": "IF Newly Stalled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Newly Stalled": {
+      "main": [
+        [
+          {
+            "node": "Insert Stall Activity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aggregate Per Contractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Stall Activity": {
+      "main": [
+        [
+          {
+            "node": "Insert Stall Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Stall Notification": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Per Contractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Per Contractor": {
+      "main": [
+        [
+          {
+            "node": "IF Has New Stalls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has New Stalls": {
+      "main": [
+        [
+          {
+            "node": "Send Digest SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

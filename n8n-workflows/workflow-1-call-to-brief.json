@@ -1,0 +1,1398 @@
+{
+  "name": "Phase 3 - Workflow 1 - Call to Brief",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "retell-events",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "retell-webhook",
+      "name": "Retell Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        600
+      ],
+      "notes": "Retell fires call_started, call_ended, and call_analyzed to this same URL. Everything downstream filters to call_ended only."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const crypto = require('crypto');\n\nconst headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || {};\nconst sigHeader = headers['x-retell-signature'] || headers['X-Retell-Signature'];\nconst apiKey = $env.RETELL_API_KEY;\n\nconst result = { ...body, verified: false, reason: null };\n\nif (!sigHeader) {\n  result.reason = 'missing signature header';\n  return [{ json: result }];\n}\n\n// Retell's documented format is \"v=<timestamp>,d=<digest>\".\n// VERIFY THE EXACT SIGNED STRING AGAINST RETELL'S CURRENT DOCS OR THEIR\n// OFFICIAL SDK's verify() HELPER before relying on this in production \u2014\n// this reproduces the general HMAC-SHA256 + timestamp-window pattern\n// their docs describe, but the precise byte string being signed\n// (timestamp + '.' + rawBody below) should be confirmed against their\n// reference implementation, not just this reconstruction.\nconst parts = Object.fromEntries(\n  sigHeader.split(',').map(p => { const [k, v] = p.split('='); return [k, v]; })\n);\nconst timestamp = parts.v;\nconst digest = parts.d;\n\nif (!timestamp || !digest) {\n  result.reason = 'malformed signature header';\n  return [{ json: result }];\n}\n\nconst now = Math.floor(Date.now() / 1000);\nif (Math.abs(now - Number(timestamp)) > 300) {\n  result.reason = 'stale timestamp (possible replay)';\n  return [{ json: result }];\n}\n\nconst rawBody = JSON.stringify(body);\nconst expected = crypto\n  .createHmac('sha256', apiKey)\n  .update(`${timestamp}.${rawBody}`)\n  .digest('hex');\n\nlet isValid = false;\ntry {\n  isValid = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(digest));\n} catch (e) {\n  isValid = false; // length mismatch etc. \u2014 treat as invalid, not a crash\n}\n\nresult.verified = isValid;\nresult.reason = isValid ? null : 'signature mismatch';\nreturn [{ json: result }];"
+      },
+      "id": "verify-signature",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        600
+      ],
+      "notes": "Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto set on the n8n container (see docker-compose.yml) or require('crypto') fails."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "sig-check",
+              "leftValue": "={{$json.verified}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-verified",
+      "name": "IF Verified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"error\": \"invalid signature\"} }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "respond-401-invalid-signature",
+      "name": "Respond 401 Invalid Signature",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        480
+      ],
+      "notes": "If this fires repeatedly, check RETELL_API_KEY hasn't rotated on Retell's side."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "event-check",
+              "leftValue": "={{$json.event}}",
+              "rightValue": "call_ended",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-is-call-ended",
+      "name": "IF Is Call Ended",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"ignored\", \"event\": $json.event} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-ignored-event",
+      "name": "Respond 200 Ignored Event",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "twilio_phone_number",
+              "value": "=eq.{{$json.to_number}}"
+            },
+            {
+              "name": "select",
+              "value": "id,phone,company_name"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lookup-contractor",
+      "name": "Lookup Contractor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "found-check",
+              "leftValue": "={{$json.length}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-contractor-found",
+      "name": "IF Contractor Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "throw new Error(`No contractor found for Twilio number ${$('Verify Signature').item.json.to_number}. A call came in on a number that doesn't match any contractor \u2014 check for a provisioning mismatch.`);"
+      },
+      "id": "no-contractor-match---alert",
+      "name": "No Contractor Match - Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        700
+      ],
+      "notes": "Deliberately throws so the workflow's attached Error Workflow (see error-workflow.json) fires and alerts you directly."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/customers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "on_conflict",
+              "value": "contractor_id,phone"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('IF Contractor Found').item.json[0].id, \"phone\": $('Verify Signature').item.json.from_number, \"name\": \"Caller \" + $('Verify Signature').item.json.from_number.slice(-4)} }}",
+        "options": {}
+      },
+      "id": "find-or-create-customer",
+      "name": "Find or Create Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "ignore-duplicates means a repeat caller's existing row comes back as-is (empty body) rather than erroring; the next node re-fetches by phone either way."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/customers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "contractor_id",
+              "value": "=eq.{{$('IF Contractor Found').item.json[0].id}}"
+            },
+            {
+              "name": "phone",
+              "value": "=eq.{{$('Verify Signature').item.json.from_number}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-customer",
+      "name": "Fetch Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1780,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/transcripts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "on_conflict",
+              "value": "retell_call_id"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('IF Contractor Found').item.json[0].id, \"customer_id\": $json[0].id, \"retell_call_id\": $('Verify Signature').item.json.call_id, \"caller_phone\": $('Verify Signature').item.json.from_number, \"twilio_number\": $('Verify Signature').item.json.to_number, \"duration_seconds\": Math.round(($('Verify Signature').item.json.duration_ms || 0) / 1000), \"transcript_text\": $('Verify Signature').item.json.transcript || '', \"recording_url\": $('Verify Signature').item.json.recording_url, \"status\": \"processing\", \"raw_metadata\": $('Verify Signature').item.json} }}",
+        "options": {}
+      },
+      "id": "insert-transcript",
+      "name": "Insert Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "retell_call_id is UNIQUE (from Phase 1) \u2014 a retried webhook delivery for a call already inserted comes back empty here, which the next node treats as 'already processed, stop'."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "newly-inserted-check",
+              "leftValue": "={{$json.length}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-newly-inserted",
+      "name": "IF Newly Inserted",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"already processed\"} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-already-processed",
+      "name": "Respond 200 Already Processed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"accepted\"} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-accepted",
+      "name": "Respond 200 Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        800
+      ],
+      "notes": "Retell only needs this fast 2xx. Claude + brief creation + SMS below can safely take longer than Retell's 10s retry window since this already unblocked it."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "duration-check",
+              "leftValue": "={{$('Insert Transcript').item.json[0].duration_seconds ?? $('Verify Signature').item.json.duration_ms / 1000}}",
+              "rightValue": 15,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "transcript-check",
+              "leftValue": "={{($('Verify Signature').item.json.transcript || '').trim().length}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-passes-quality-check",
+      "name": "IF Passes Quality Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        800
+      ],
+      "notes": "Acceptance test: calls under 15s produce no brief."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "return [{ json: { transcript_id: $('Insert Transcript').item.json[0].id, new_status: 'no_brief', reason: 'under 15s or empty transcript' } }];"
+      },
+      "id": "mark-no-brief---too-short",
+      "name": "Mark No Brief - Too Short",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/transcripts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.transcript_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"status\": $json.new_status} }}",
+        "options": {}
+      },
+      "id": "update-transcript-status-(short)",
+      "name": "Update Transcript Status (short)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3100,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"model\": \"claude-haiku-4-5-20251001\", \"max_tokens\": 1536, \"system\": [{\"type\": \"text\", \"text\": \"You are analyzing a phone call transcript between an AI receptionist (Sarah) and a homeowner who called a roofing contractor. Extract structured data and assess whether this is a qualified lead worth the contractor's immediate attention. Respond with ONLY valid JSON matching this exact schema, no other text:\\\\n{\\\\n  \\\"qualification\\\": \\\"qualified\\\" | \\\"not_qualified\\\",\\\\n  \\\"homeowner_name\\\": string | null,\\\\n  \\\"homeowner_email\\\": string | null,\\\\n  \\\"property_address\\\": string | null,\\\\n  \\\"damage_type\\\": \\\"roof\\\" | \\\"siding\\\" | \\\"gutters\\\" | \\\"other\\\" | null,\\\\n  \\\"damage_description\\\": string | null,\\\\n  \\\"damage_severity\\\": \\\"minor\\\" | \\\"moderate\\\" | \\\"severe\\\" | null,\\\\n  \\\"interior_damage\\\": boolean,\\\\n  \\\"insurance_carrier\\\": string | null,\\\\n  \\\"has_filed_claim\\\": boolean,\\\\n  \\\"claim_number\\\": string | null,\\\\n  \\\"competitor_mentioned\\\": boolean,\\\\n  \\\"competitor_name\\\": string | null,\\\\n  \\\"competitor_scheduled\\\": boolean,\\\\n  \\\"competitor_timing\\\": string | null,\\\\n  \\\"urgency\\\": \\\"low\\\" | \\\"medium\\\" | \\\"high\\\" | \\\"critical\\\",\\\\n  \\\"estimated_value_low\\\": number | null,\\\\n  \\\"estimated_value_high\\\": number | null,\\\\n  \\\"lead_score\\\": integer 0-100,\\\\n  \\\"appointment_probability\\\": integer 0-100,\\\\n  \\\"recommended_action\\\": string,\\\\n  \\\"recommended_follow_up\\\": string | null,\\\\n  \\\"situation_summary\\\": string,\\\\n  \\\"suggested_opening\\\": string (a natural opening line for the contractor to use when calling back \\u2014 reference something specific from the call),\\\\n  \\\"risk_flags\\\": string[] (short phrases, e.g. \\\"water intrusion active\\\", \\\"elderly homeowner alone\\\"),\\\\n  \\\"key_objections\\\": string[] (concerns the homeowner raised, if any),\\\\n  \\\"confidence_score\\\": integer 0-100 (how confident you are in this assessment),\\\\n  \\\"data_completeness\\\": integer 0-100 (how much of this schema the call actually supported vs. inferred)\\\\n}\\\\nIf the call doesn't support a field, use null (or false/0 for booleans/numbers, [] for arrays) rather than guessing.\", \"cache_control\": {\"type\": \"ephemeral\"}}], \"messages\": [{\"role\": \"user\", \"content\": $('Verify Signature').item.json.transcript}]} }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "call-claude---win-brief-ai",
+      "name": "Call Claude - Win Brief AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3320,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "3 retries handles 429/529/5xx. Non-retryable 4xx (bad key etc.) still exhausts retries uselessly here \u2014 n8n doesn't let you branch retry-vs-not per status code natively, so the Error Workflow catches the final failure either way."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "return [{ json: { ...$json, _aiCallStartedAtMs: Date.now() } }];"
+      },
+      "id": "record-call-start-time",
+      "name": "Record Call Start Time",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        650
+      ],
+      "notes": "Captures a timestamp so the next-but-one node can compute real ai_latency_ms, rather than the Claude call's own duration (which the API response doesn't report directly)."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Current Haiku 4.5 pricing (confirmed against Anthropic's pricing page,\n// July 2026) \u2014 $1/$5 per million input/output tokens, cache reads at\n// 10% of input price. Update these three constants if pricing changes;\n// historical rows keep whatever cost was computed at the time, by design.\nconst INPUT_PRICE_PER_MTOK = 1.00;\nconst OUTPUT_PRICE_PER_MTOK = 5.00;\nconst CACHE_READ_PRICE_PER_MTOK = 0.10;\n\nconst response = $input.item.json;\nconst startedAtMs = $('Record Call Start Time').item.json._aiCallStartedAtMs;\nconst latencyMs = startedAtMs ? Date.now() - startedAtMs : null;\nconst usage = response.usage || {};\nconst inputTokens = usage.input_tokens || 0;\nconst outputTokens = usage.output_tokens || 0;\nconst cacheReadTokens = usage.cache_read_input_tokens || 0;\n\nconst costUsd =\n  (inputTokens / 1_000_000) * INPUT_PRICE_PER_MTOK +\n  (outputTokens / 1_000_000) * OUTPUT_PRICE_PER_MTOK +\n  (cacheReadTokens / 1_000_000) * CACHE_READ_PRICE_PER_MTOK;\n\nconst usageMeta = {\n  ai_model: response.model || 'claude-haiku-4-5-20251001',\n  ai_input_tokens: inputTokens,\n  ai_output_tokens: outputTokens,\n  ai_cache_read_tokens: cacheReadTokens,\n  ai_cost_usd: Number(costUsd.toFixed(6)),\n  ai_latency_ms: latencyMs,\n};\n\nlet parsed;\ntry {\n  const text = response.content?.[0]?.text || '';\n  parsed = JSON.parse(text);\n} catch (e) {\n  return [{ json: { valid: false, reason: 'unparseable JSON from Claude', ...usageMeta } }];\n}\n\nconst requiredFields = ['qualification', 'urgency', 'situation_summary', 'suggested_opening'];\nconst missing = requiredFields.filter((f) => parsed[f] === undefined);\nconst validQualification = ['qualified', 'not_qualified'].includes(parsed.qualification);\nconst validUrgency = ['low', 'medium', 'high', 'critical'].includes(parsed.urgency);\n\nif (missing.length > 0 || !validQualification || !validUrgency) {\n  return [{ json: {\n    valid: false,\n    reason: `schema validation failed: missing=${missing.join(',')}, qualification=${parsed.qualification}, urgency=${parsed.urgency}`,\n    ...usageMeta,\n  } }];\n}\n\nreturn [{ json: { valid: true, ...parsed, ...usageMeta } }];"
+      },
+      "id": "parse-and-validate-ai-output",
+      "name": "Parse and Validate AI Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        800
+      ],
+      "notes": "Validates schema before anything touches the DB \u2014 a malformed response is treated the same as an API failure (status='failed'), not force-fit into NOT NULL columns."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{$json.valid}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "qualified-check",
+              "leftValue": "={{$json.qualification}}",
+              "rightValue": "qualified",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-valid-and-qualified",
+      "name": "IF Valid and Qualified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3760,
+        800
+      ],
+      "notes": "Acceptance test: non-qualified calls produce no brief. Malformed/failed AI output also lands here (valid=false), routed to 'failed' instead of 'no_brief' below."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const input = $json;\nconst status = input.valid === false ? 'failed' : 'no_brief';\nreturn [{ json: {\n  transcript_id: $('Insert Transcript').item.json[0].id,\n  new_status: status,\n  ai_model: input.ai_model,\n  ai_input_tokens: input.ai_input_tokens,\n  ai_output_tokens: input.ai_output_tokens,\n  ai_cache_read_tokens: input.ai_cache_read_tokens,\n  ai_cost_usd: input.ai_cost_usd,\n  ai_latency_ms: input.ai_latency_ms,\n} }];"
+      },
+      "id": "mark-no-brief-or-failed",
+      "name": "Mark No Brief or Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3980,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/transcripts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.transcript_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"status\": $json.new_status, \"ai_model\": $json.ai_model, \"ai_input_tokens\": $json.ai_input_tokens, \"ai_output_tokens\": $json.ai_output_tokens, \"ai_cache_read_tokens\": $json.ai_cache_read_tokens, \"ai_cost_usd\": $json.ai_cost_usd, \"ai_latency_ms\": $json.ai_latency_ms} }}",
+        "options": {}
+      },
+      "id": "update-transcript-status-(no-brief-failed)",
+      "name": "Update Transcript Status (no brief/failed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4200,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Cost is recorded even when the call didn't qualify \u2014 every Claude call costs money whether or not it produces a brief, so this is where 'no_brief' rows still get their ai_cost_usd filled in."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const existing = $('Fetch Customer').item.json[0];\nconst ai = $json;\nconst patch = {};\n\nconst looksLikePlaceholder = existing.name && existing.name.startsWith('Caller ');\nif ((looksLikePlaceholder || !existing.name) && ai.homeowner_name) {\n  patch.name = ai.homeowner_name;\n}\nif (!existing.email && ai.homeowner_email) {\n  patch.email = ai.homeowner_email;\n}\nif (!existing.property_address && ai.property_address) {\n  patch.property_address = ai.property_address;\n}\n\nreturn [{ json: { customer_id: existing.id, patch, hasPatch: Object.keys(patch).length > 0 } }];"
+      },
+      "id": "compute-customer-enrichment",
+      "name": "Compute Customer Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3980,
+        900
+      ],
+      "notes": "Fills gaps only \u2014 a repeat caller's already-good name/email/address is never clobbered by a later call's AI extraction."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-patch-check",
+              "leftValue": "={{$json.hasPatch}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-has-enrichment",
+      "name": "IF Has Enrichment",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4200,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/customers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.customer_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.patch}}",
+        "options": {}
+      },
+      "id": "patch-customer",
+      "name": "Patch Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4420,
+        850
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/briefs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('IF Contractor Found').item.json[0].id, \"transcript_id\": $('Insert Transcript').item.json[0].id, \"customer_id\": $('Compute Customer Enrichment').item.json.customer_id, \"damage_type\": $('Parse and Validate AI Output').item.json.damage_type, \"damage_description\": $('Parse and Validate AI Output').item.json.damage_description, \"damage_severity\": $('Parse and Validate AI Output').item.json.damage_severity, \"interior_damage\": $('Parse and Validate AI Output').item.json.interior_damage ?? false, \"insurance_carrier\": $('Parse and Validate AI Output').item.json.insurance_carrier, \"has_filed_claim\": $('Parse and Validate AI Output').item.json.has_filed_claim ?? false, \"claim_number\": $('Parse and Validate AI Output').item.json.claim_number, \"competitor_mentioned\": $('Parse and Validate AI Output').item.json.competitor_mentioned ?? false, \"competitor_name\": $('Parse and Validate AI Output').item.json.competitor_name, \"competitor_scheduled\": $('Parse and Validate AI Output').item.json.competitor_scheduled ?? false, \"competitor_timing\": $('Parse and Validate AI Output').item.json.competitor_timing, \"urgency\": $('Parse and Validate AI Output').item.json.urgency, \"estimated_value_low\": $('Parse and Validate AI Output').item.json.estimated_value_low, \"estimated_value_high\": $('Parse and Validate AI Output').item.json.estimated_value_high, \"lead_score\": $('Parse and Validate AI Output').item.json.lead_score, \"appointment_probability\": $('Parse and Validate AI Output').item.json.appointment_probability, \"recommended_action\": $('Parse and Validate AI Output').item.json.recommended_action, \"recommended_follow_up\": $('Parse and Validate AI Output').item.json.recommended_follow_up, \"situation_summary\": $('Parse and Validate AI Output').item.json.situation_summary, \"suggested_opening\": $('Parse and Validate AI Output').item.json.suggested_opening, \"risk_flags\": $('Parse and Validate AI Output').item.json.risk_flags ?? [], \"key_objections\": $('Parse and Validate AI Output').item.json.key_objections ?? [], \"confidence_score\": $('Parse and Validate AI Output').item.json.confidence_score, \"data_completeness\": $('Parse and Validate AI Output').item.json.data_completeness, \"ai_model\": $('Parse and Validate AI Output').item.json.ai_model, \"ai_raw_output\": $('Parse and Validate AI Output').item.json} }}",
+        "options": {}
+      },
+      "id": "insert-brief",
+      "name": "Insert Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4640,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Full Claude JSON goes into ai_raw_output for fidelity \u2014 fields like the summary that don't have a dedicated column aren't lost, just not individually queryable yet."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/transcripts",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Insert Transcript').item.json[0].id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"status\": \"completed\", \"ai_model\": $('Parse and Validate AI Output').item.json.ai_model, \"ai_input_tokens\": $('Parse and Validate AI Output').item.json.ai_input_tokens, \"ai_output_tokens\": $('Parse and Validate AI Output').item.json.ai_output_tokens, \"ai_cache_read_tokens\": $('Parse and Validate AI Output').item.json.ai_cache_read_tokens, \"ai_cost_usd\": $('Parse and Validate AI Output').item.json.ai_cost_usd, \"ai_latency_ms\": $('Parse and Validate AI Output').item.json.ai_latency_ms} }}",
+        "options": {}
+      },
+      "id": "update-transcript-completed",
+      "name": "Update Transcript Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        4860,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('IF Contractor Found').item.json[0].id, \"type\": \"new_lead\", \"title\": \"New lead: \" + ($('Compute Customer Enrichment').item.json.patch.name || 'a homeowner'), \"body\": $('Parse and Validate AI Output').item.json.situation_summary, \"link_type\": \"brief\", \"link_id\": $('Insert Brief').item.json[0].id, \"channels_sent\": [\"in_app\"]} }}",
+        "options": {}
+      },
+      "id": "insert-notification",
+      "name": "Insert Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        5080,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "channels_sent starts as just in_app; the SMS branch below PATCHes this to add 'sms' only if Twilio confirms the send."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "value-check",
+              "leftValue": "={{$('Parse and Validate AI Output').item.json.estimated_value_high}}",
+              "rightValue": 10000,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "urgency-check",
+              "leftValue": "={{$('Parse and Validate AI Output').item.json.urgency}}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "if-high-value-or-critical",
+      "name": "IF High Value or Critical",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5300,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$env.TWILIO_ACCOUNT_SID}}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{$('IF Contractor Found').item.json[0].phone}}"
+            },
+            {
+              "name": "From",
+              "value": "={{$env.TWILIO_ALERT_NUMBER}}"
+            },
+            {
+              "name": "Body",
+              "value": "=New high-value lead: {{$('Compute Customer Enrichment').item.json.patch.name || 'a homeowner'}} \u2014 ${{$('Parse and Validate AI Output').item.json.estimated_value_low}}-${{$('Parse and Validate AI Output').item.json.estimated_value_high}}. Check your dashboard."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-sms-via-twilio",
+      "name": "Send SMS via Twilio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        5520,
+        800
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "continueOnFail=true is deliberate: the brief and notification are already committed by this point, so a Twilio failure (bad number, account issue) shouldn't roll anything back or error the whole run \u2014 it just means the contractor only gets the in-app notification, reflected below."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Runs after the Twilio node whether it succeeded or failed\n// (continueOnFail=true upstream). n8n surfaces a failed HTTP node's\n// result with an `error` field rather than throwing when\n// continueOnFail is set \u2014 check for that instead of assuming success.\nconst twilioResult = $json;\nconst smsSucceeded = !twilioResult.error && !!twilioResult.sid;\n\nreturn [{ json: {\n  notification_id: $('Insert Notification').item.json[0].id,\n  channels_sent: smsSucceeded ? ['in_app', 'sms'] : ['in_app'],\n} }];"
+      },
+      "id": "determine-final-channels",
+      "name": "Determine Final Channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5740,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/notifications",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.notification_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"channels_sent\": $json.channels_sent} }}",
+        "options": {}
+      },
+      "id": "update-notification-channels",
+      "name": "Update Notification Channels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        5960,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    }
+  ],
+  "connections": {
+    "Retell Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "IF Verified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Verified": {
+      "main": [
+        [
+          {
+            "node": "IF Is Call Ended",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401 Invalid Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Is Call Ended": {
+      "main": [
+        [
+          {
+            "node": "Lookup Contractor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 Ignored Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Contractor": {
+      "main": [
+        [
+          {
+            "node": "IF Contractor Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Contractor Found": {
+      "main": [
+        [
+          {
+            "node": "Find or Create Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Contractor Match - Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find or Create Customer": {
+      "main": [
+        [
+          {
+            "node": "Fetch Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Customer": {
+      "main": [
+        [
+          {
+            "node": "Insert Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Transcript": {
+      "main": [
+        [
+          {
+            "node": "IF Newly Inserted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Newly Inserted": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 Already Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 200 Accepted": {
+      "main": [
+        [
+          {
+            "node": "IF Passes Quality Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Passes Quality Check": {
+      "main": [
+        [
+          {
+            "node": "Record Call Start Time",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark No Brief - Too Short",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark No Brief - Too Short": {
+      "main": [
+        [
+          {
+            "node": "Update Transcript Status (short)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Call Start Time": {
+      "main": [
+        [
+          {
+            "node": "Call Claude - Win Brief AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Claude - Win Brief AI": {
+      "main": [
+        [
+          {
+            "node": "Parse and Validate AI Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse and Validate AI Output": {
+      "main": [
+        [
+          {
+            "node": "IF Valid and Qualified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Valid and Qualified": {
+      "main": [
+        [
+          {
+            "node": "Compute Customer Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark No Brief or Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark No Brief or Failed": {
+      "main": [
+        [
+          {
+            "node": "Update Transcript Status (no brief/failed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Customer Enrichment": {
+      "main": [
+        [
+          {
+            "node": "IF Has Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Patch Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Patch Customer": {
+      "main": [
+        [
+          {
+            "node": "Insert Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Brief": {
+      "main": [
+        [
+          {
+            "node": "Update Transcript Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Transcript Completed": {
+      "main": [
+        [
+          {
+            "node": "Insert Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Notification": {
+      "main": [
+        [
+          {
+            "node": "IF High Value or Critical",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF High Value or Critical": {
+      "main": [
+        [
+          {
+            "node": "Send SMS via Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send SMS via Twilio": {
+      "main": [
+        [
+          {
+            "node": "Determine Final Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Final Channels": {
+      "main": [
+        [
+          {
+            "node": "Update Notification Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

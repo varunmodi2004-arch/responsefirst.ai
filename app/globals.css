@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+:root {
+  /* Cool paper, not the warm-cream-plus-terracotta combo everyone reaches for */
+  --paper: #f5f6f7;
+  --paper-raised: #ffffff;
+  --ink: #1c2128;
+  --ink-muted: #4a5260;
+  --line: #e2e4e8;
+
+  /* Safety/hazard orange — construction signage, not pottery-clay terracotta */
+  --accent: #d4531f;
+  --accent-hover: #b8441a;
+
+  /* Storm-blue — secondary elements */
+  --slate: #3b5166;
+
+  /* Signal green — reserved for genuine positive outcomes (booked,
+     paid, completed). Used sparingly: this system has one accent
+     (orange, for attention/action) and one confirmation color
+     (green, for "this went well"), not a rainbow of status hues. */
+  --confirm: #1a7a4c;
+  --confirm-soft: #e8f4ee;
+
+  /* Elevation — one soft resting shadow, one for the rare floating
+     surface (dropdowns, sticky action bars). Never used together
+     with a heavy border; a card gets a border OR a shadow-on-hover,
+     not both fighting for the same job. */
+  --shadow-resting: 0 1px 2px rgba(28, 33, 40, 0.04);
+  --shadow-raised: 0 8px 24px rgba(28, 33, 40, 0.10);
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-raised: var(--paper-raised);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-slate: var(--slate);
+  --color-confirm: var(--confirm);
+  --color-confirm-soft: var(--confirm-soft);
+
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+
+  --animate-fade-up: fade-up 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-fade-in: fade-in 0.24s ease-out both;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  /* Tabular figures everywhere by default — dollar amounts and day
+     counts should never visually jitter as digits change width. */
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* One global switch: anyone with reduced-motion set gets a
+   functionally identical but motionless product, not a half-animated
+   one. Every animation in this app is spend-able, not load-bearing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

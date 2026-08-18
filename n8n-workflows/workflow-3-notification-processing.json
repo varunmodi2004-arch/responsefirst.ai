@@ -1,0 +1,698 @@
+{
+  "name": "Phase 5 (modified) - Workflow 3 - Notification Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "notification-processing",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "notification-webhook",
+      "name": "Notification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        700
+      ],
+      "notes": "Fired by trg_notify_workflow3_new_notification (on notifications INSERT, not briefs INSERT \u2014 see the migration file for why). Payload: { record: {...full notifications row...} }. This row already has contractor_id, channels_sent, and link_id (the brief) \u2014 urgency/value/customer_id still need a Fetch Brief since those live on briefs, not notifications."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const auth = $input.item.json.headers?.authorization || $input.item.json.headers?.Authorization || '';\nconst expected = `Bearer ${$env.INTERNAL_WEBHOOK_SECRET}`;\nconst verified = auth === expected;\nreturn [{ json: { ...$input.item.json.body, verified } }];"
+      },
+      "id": "verify-internal-secret",
+      "name": "Verify Internal Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.verified}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-secret-verified",
+      "name": "IF Secret Verified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"error\": \"invalid internal secret\"} }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "respond-401-bad-secret",
+      "name": "Respond 401 Bad Secret",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/briefs",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.record.link_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-brief",
+      "name": "Fetch Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Fetch Brief').item.json[0].contractor_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-contractor",
+      "name": "Fetch Contractor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        850
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/customers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Fetch Brief').item.json[0].customer_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-customer",
+      "name": "Fetch Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const notification = $('Verify Internal Secret').item.json.record;\nconst brief = $('Fetch Brief').item.json[0];\nconst contractor = $('Fetch Contractor').item.json[0];\nconst customer = $('Fetch Customer').item.json[0];\nconst alreadySent = (notification.channels_sent || []).includes('sms');\nconst isHighValueOrUrgent = (brief.estimated_value_high >= 10000) || (brief.urgency === 'critical');\n\nreturn [{ json: {\n  shouldSendSms: !alreadySent && isHighValueOrUrgent,\n  contractorPhone: contractor?.phone,\n  messageBody: `New high-value lead: ${customer?.name || 'a homeowner'} \u2014 $${brief.estimated_value_low}-$${brief.estimated_value_high}. Check your dashboard.`,\n  notificationId: notification.id,\n} }];"
+      },
+      "id": "compute-lead-sms-decision",
+      "name": "Compute Lead SMS Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-send",
+              "leftValue": "={{$json.shouldSendSms}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-should-send-sms",
+      "name": "IF Should Send SMS",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$env.TWILIO_ACCOUNT_SID}}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{$json.contractorPhone}}"
+            },
+            {
+              "name": "From",
+              "value": "={{$env.TWILIO_ALERT_NUMBER}}"
+            },
+            {
+              "name": "Body",
+              "value": "={{$json.messageBody}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-sms-via-twilio",
+      "name": "Send SMS via Twilio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        700
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "continueOnFail=true is deliberate: the brief and notification are already committed by this point, so a Twilio failure (bad number, account issue) shouldn't roll anything back or error the whole run \u2014 it just means the contractor only gets the in-app notification, reflected below."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Runs after the Twilio node whether it succeeded or failed\n// (continueOnFail=true upstream). n8n surfaces a failed HTTP node's\n// result with an `error` field rather than throwing when\n// continueOnFail is set \u2014 check for that instead of assuming success.\nconst twilioResult = $json;\nconst smsSucceeded = !twilioResult.error && !!twilioResult.sid;\n\nreturn [{ json: {\n  notification_id: $('Verify Internal Secret').item.json.record.id,\n  channels_sent: smsSucceeded ? ['in_app', 'sms'] : ['in_app'],\n} }];"
+      },
+      "id": "determine-final-channels",
+      "name": "Determine Final Channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/notifications",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.notification_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"channels_sent\": $json.channels_sent} }}",
+        "options": {}
+      },
+      "id": "update-notification-channels",
+      "name": "Update Notification Channels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"processed\", \"channels_sent\": $json.channels_sent} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-sms-sent",
+      "name": "Respond 200 SMS Sent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2220,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"no sms needed\"} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-no-sms-needed",
+      "name": "Respond 200 No SMS Needed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        850
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.record.type}}",
+              "rightValue": "new_lead",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-is-new-lead",
+      "name": "IF Is New Lead",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        900,
+        700
+      ],
+      "notes": "Binary on purpose \u2014 only 2 notification types exist right now (new_lead, claim_created). If Phase 6 adds more (stalled_claim, supplement_opportunity, etc.), this becomes a Switch node instead of an IF, since a chain of nested IFs gets unreadable past 2 branches."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.record.link_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-claim",
+      "name": "Fetch Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Fetch Claim').item.json[0].contractor_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-contractor-(claim)",
+      "name": "Fetch Contractor (claim)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Unconditional send (per the original spec's Workflow 2 Step 6),\n// gated only on not having already sent \u2014 same idempotency\n// principle as the lead branch, just no value/urgency threshold.\nconst notification = $('Verify Internal Secret').item.json.record;\nconst claim = $('Fetch Claim').item.json[0];\nconst contractor = $('Fetch Contractor (claim)').item.json[0];\nconst alreadySent = (notification.channels_sent || []).includes('sms');\n\nreturn [{ json: {\n  shouldSendSms: !alreadySent,\n  contractorPhone: contractor?.phone,\n  messageBody: `Claim created for claim #${claim?.claim_number ?? claim?.id ?? ''}. Track it in your pipeline.`,\n  notificationId: notification.id,\n} }];"
+      },
+      "id": "compute-claim-sms-decision",
+      "name": "Compute Claim SMS Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        900
+      ]
+    }
+  ],
+  "connections": {
+    "Notification Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Internal Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Internal Secret": {
+      "main": [
+        [
+          {
+            "node": "IF Secret Verified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Secret Verified": {
+      "main": [
+        [
+          {
+            "node": "IF Is New Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401 Bad Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Brief": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contractor": {
+      "main": [
+        [
+          {
+            "node": "Fetch Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Customer": {
+      "main": [
+        [
+          {
+            "node": "Compute Lead SMS Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should Send SMS": {
+      "main": [
+        [
+          {
+            "node": "Send SMS via Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 No SMS Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS via Twilio": {
+      "main": [
+        [
+          {
+            "node": "Determine Final Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Final Channels": {
+      "main": [
+        [
+          {
+            "node": "Update Notification Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Notification Channels": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 SMS Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Is New Lead": {
+      "main": [
+        [
+          {
+            "node": "Fetch Brief",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Claim": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contractor (claim)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contractor (claim)": {
+      "main": [
+        [
+          {
+            "node": "Compute Claim SMS Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Lead SMS Decision": {
+      "main": [
+        [
+          {
+            "node": "IF Should Send SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Claim SMS Decision": {
+      "main": [
+        [
+          {
+            "node": "IF Should Send SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

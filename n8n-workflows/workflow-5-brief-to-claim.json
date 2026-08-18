@@ -1,0 +1,414 @@
+{
+  "name": "Phase 5 - Workflow 5 - Brief to Claim",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "brief-booked",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "brief-booked-webhook",
+      "name": "Brief Booked Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        700
+      ],
+      "notes": "Fired by trg_notify_workflow5_brief_booked, on briefs UPDATE WHEN new.status='booked' AND old.status IS DISTINCT FROM 'booked'. Payload: { record: {...full briefs row, post-update...} }."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const auth = $input.item.json.headers?.authorization || $input.item.json.headers?.Authorization || '';\nconst expected = `Bearer ${$env.INTERNAL_WEBHOOK_SECRET}`;\nconst verified = auth === expected;\nreturn [{ json: { ...$input.item.json.body, verified } }];"
+      },
+      "id": "verify-internal-secret",
+      "name": "Verify Internal Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        700
+      ],
+      "notes": "Same shared secret as Workflows 2 and 3 \u2014 no new secret needed for this one."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.verified}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-secret-verified",
+      "name": "IF Secret Verified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"error\": \"invalid internal secret\"} }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "respond-401-bad-secret",
+      "name": "Respond 401 Bad Secret",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "brief_id",
+              "value": "=eq.{{$json.record.id}}"
+            },
+            {
+              "name": "select",
+              "value": "id"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "check-existing-claim",
+      "name": "Check Existing Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.length}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-no-existing-claim",
+      "name": "IF No Existing Claim",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"already has claim\"} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-already-has-claim",
+      "name": "Respond 200 Already Has Claim",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/claims",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('Verify Internal Secret').item.json.record.contractor_id, \"brief_id\": $('Verify Internal Secret').item.json.record.id, \"customer_id\": $('Verify Internal Secret').item.json.record.customer_id, \"insurance_carrier\": $('Verify Internal Secret').item.json.record.insurance_carrier, \"claim_number\": $('Verify Internal Secret').item.json.record.claim_number, \"damage_type\": $('Verify Internal Secret').item.json.record.damage_type, \"contractor_estimate\": $('Verify Internal Secret').item.json.record.estimated_value_high} }}",
+        "options": {}
+      },
+      "id": "insert-claim",
+      "name": "Insert Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "stage defaults to 'claim_filed' via the column default \u2014 not set explicitly here."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/claim_activities",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"claim_id\": $json[0].id, \"contractor_id\": $json[0].contractor_id, \"activity_type\": \"claim_created\", \"description\": \"Claim created from a booked brief (lead score: \" + ($('Verify Internal Secret').item.json.record.lead_score ?? 'n/a') + \")\", \"source\": \"system\"} }}",
+        "options": {}
+      },
+      "id": "insert-activity",
+      "name": "Insert Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('Insert Claim').item.json[0].contractor_id, \"type\": \"claim_created\", \"title\": \"Claim created\", \"body\": \"Track it in your pipeline.\", \"link_type\": \"claim\", \"link_id\": $('Insert Claim').item.json[0].id, \"channels_sent\": [\"in_app\"]} }}",
+        "options": {}
+      },
+      "id": "insert-notification",
+      "name": "Insert Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1780,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "channels_sent starts in_app-only, same as new_lead notifications \u2014 Workflow 3's claim_created branch decides on SMS and updates this, same pattern as leads."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"claim created\"} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-claim-created",
+      "name": "Respond 200 Claim Created",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        700
+      ]
+    }
+  ],
+  "connections": {
+    "Brief Booked Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Internal Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Internal Secret": {
+      "main": [
+        [
+          {
+            "node": "IF Secret Verified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Secret Verified": {
+      "main": [
+        [
+          {
+            "node": "Check Existing Claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401 Bad Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing Claim": {
+      "main": [
+        [
+          {
+            "node": "IF No Existing Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF No Existing Claim": {
+      "main": [
+        [
+          {
+            "node": "Insert Claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 Already Has Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Claim": {
+      "main": [
+        [
+          {
+            "node": "Insert Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Activity": {
+      "main": [
+        [
+          {
+            "node": "Insert Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Claim Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

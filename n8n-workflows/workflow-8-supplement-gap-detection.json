@@ -1,0 +1,503 @@
+{
+  "name": "Phase 6 - Workflow 8 - Supplement Gap Detection",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "supplement-gap",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "supplement-gap-webhook",
+      "name": "Supplement Gap Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        700
+      ],
+      "notes": "Fired by trg_notify_workflow8_supplement_gap, on claims UPDATE where insurance_estimate transitions null -> not null. Payload: { record: {...full claims row, post-update...} }."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const auth = $input.item.json.headers?.authorization || $input.item.json.headers?.Authorization || '';\nconst expected = `Bearer ${$vars.INTERNAL_WEBHOOK_SECRET}`;\nconst verified = auth === expected;\nreturn [{ json: { ...$input.item.json.body, verified } }];"
+      },
+      "id": "verify-internal-secret",
+      "name": "Verify Internal Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        700
+      ],
+      "notes": "Uses $vars, not $env \u2014 this project runs on n8n Cloud, where $env isn't available the way it is self-hosted. Same shared secret as every other internal webhook."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.verified}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-secret-verified",
+      "name": "IF Secret Verified",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"error\": \"invalid internal secret\"} }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "respond-401-bad-secret",
+      "name": "Respond 401 Bad Secret",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const claim = $json.record;\n// A claim can reach this trigger with contractor_estimate still\n// null (insurance_estimate got entered first) \u2014 treat as no\n// computable gap rather than producing NaN/erroring.\nconst hasBothEstimates = claim.contractor_estimate != null && claim.insurance_estimate != null;\nconst gap = hasBothEstimates ? claim.contractor_estimate - claim.insurance_estimate : null;\n\nreturn [{ json: { ...claim, gap, hasSignificantGap: gap != null && gap > 1500 } }];"
+      },
+      "id": "compute-gap",
+      "name": "Compute Gap",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        700
+      ],
+      "notes": "BUGFIX: gap formula was insurance-minus-contractor (backwards vs the architecture doc, line 989: gap = contractor_estimate - insurance_estimate); corrected to contractor-minus-insurance so it actually catches real supplement opportunities."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.hasSignificantGap}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-gap-significant",
+      "name": "IF Gap Significant",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        700
+      ],
+      "notes": "Threshold is $1500, matching the architecture doc exactly."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"no significant gap\"} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-no-significant-gap",
+      "name": "Respond 200 No Significant Gap",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"needs_attention\": true, \"supplement_status\": \"opportunity_flagged\"} }}",
+        "options": {}
+      },
+      "id": "update-claim",
+      "name": "Update Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claim_activities",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"claim_id\": $('Compute Gap').item.json.id, \"contractor_id\": $('Compute Gap').item.json.contractor_id, \"activity_type\": \"alert_generated\", \"description\": \"Supplement opportunity flagged \u2014 insurance estimate is $\" + $('Compute Gap').item.json.gap + \" higher than your estimate\", \"source\": \"ai\"} }}",
+        "options": {}
+      },
+      "id": "insert-activity",
+      "name": "Insert Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1560,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Compute Gap').item.json.contractor_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-contractor",
+      "name": "Fetch Contractor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1780,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/notifications",
+        "sendHeaders": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('Compute Gap').item.json.contractor_id, \"type\": \"supplement_opportunity\", \"title\": \"Supplement opportunity\", \"body\": \"Insurance estimate is $\" + $('Compute Gap').item.json.gap + \" higher than your estimate.\", \"link_type\": \"claim\", \"link_id\": $('Compute Gap').item.json.id, \"channels_sent\": [\"in_app\", \"sms\"]} }}",
+        "options": {}
+      },
+      "id": "insert-notification",
+      "name": "Insert Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        700
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "channels_sent is set to ['in_app','sms'] directly here, not left for Workflow 3 to decide \u2014 the migration's narrowed trigger means Workflow 3 never even sees this notification type."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$vars.TWILIO_ACCOUNT_SID}}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{$('Fetch Contractor').item.json[0].phone}}"
+            },
+            {
+              "name": "From",
+              "value": "={{$vars.TWILIO_ALERT_NUMBER}}"
+            },
+            {
+              "name": "Body",
+              "value": "=Supplement opportunity: insurance estimate is ${{$('Compute Gap').item.json.gap}} higher than your estimate. Check your pipeline."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-sms-via-twilio",
+      "name": "Send SMS via Twilio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2220,
+        700
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "continueOnFail=true \u2014 the claim/activity/notification are already committed by this point, same pattern as every other Twilio-calling node in this project."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"status\": \"gap flagged\", \"gap\": $('Compute Gap').item.json.gap} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200-gap-flagged",
+      "name": "Respond 200 Gap Flagged",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        700
+      ]
+    }
+  ],
+  "connections": {
+    "Supplement Gap Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Internal Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Internal Secret": {
+      "main": [
+        [
+          {
+            "node": "IF Secret Verified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Secret Verified": {
+      "main": [
+        [
+          {
+            "node": "Compute Gap",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401 Bad Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Gap": {
+      "main": [
+        [
+          {
+            "node": "IF Gap Significant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Gap Significant": {
+      "main": [
+        [
+          {
+            "node": "Update Claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 No Significant Gap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Claim": {
+      "main": [
+        [
+          {
+            "node": "Insert Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Activity": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contractor": {
+      "main": [
+        [
+          {
+            "node": "Insert Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Notification": {
+      "main": [
+        [
+          {
+            "node": "Send SMS via Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS via Twilio": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Gap Flagged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

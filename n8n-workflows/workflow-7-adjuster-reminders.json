@@ -1,0 +1,634 @@
+{
+  "name": "Phase 6 - Workflow 7 - Adjuster Reminders",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "daily-7am-trigger",
+      "name": "Daily 7am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        500
+      ],
+      "notes": "24h-ahead check, once daily at 7 AM."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "adjuster_meeting_date",
+              "value": "=gte.{{$now.plus(23,'hours').toISO()}}"
+            },
+            {
+              "name": "adjuster_meeting_date",
+              "value": "=lte.{{$now.plus(25,'hours').toISO()}}"
+            },
+            {
+              "name": "adjuster_meeting_reminder_sent",
+              "value": "eq.false"
+            },
+            {
+              "name": "select",
+              "value": "id,contractor_id,customer_id,adjuster_meeting_date,adjuster_name"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-claims-needing-24h-reminder",
+      "name": "Fetch Claims Needing 24h Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "~23-25h window (not exactly 24h) since this runs once a day \u2014 a claim whose meeting is 24h+/-1h from this exact run time should still be caught. adjuster_meeting_reminder_sent=false is the guard against re-sending on tomorrow's run."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "return $input.all()[0].json.map((claim) => ({ json: claim }));"
+      },
+      "id": "split-out-24h-claims",
+      "name": "Split Out 24h Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        500
+      ],
+      "notes": "Fans the array response out into one item per claim. Everything from here through Mark 24h Sent now correctly runs once per matching claim."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.contractor_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-contractor-(24h)",
+      "name": "Fetch Contractor (24h)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        680,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "Runs once per matching claim \u2014 n8n's normal per-item fan-out from the array Fetch Claims returned, not an explicit loop node."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$vars.TWILIO_ACCOUNT_SID}}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{$json[0].phone}}"
+            },
+            {
+              "name": "From",
+              "value": "={{$vars.TWILIO_ALERT_NUMBER}}"
+            },
+            {
+              "name": "Body",
+              "value": "=Reminder: adjuster meeting tomorrow{{$('Split Out 24h Claims').item.json.adjuster_name ? ' with ' + $('Split Out 24h Claims').item.json.adjuster_name : ''}}."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-24h-sms",
+      "name": "Send 24h SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        500
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "$json[0] here because THIS node's immediate input is Fetch Contractor's array response, unlike the claim fields (referenced by name from Split Out 24h Claims, which ran earlier in this same per-item branch)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/notifications",
+        "sendHeaders": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('Split Out 24h Claims').item.json.contractor_id, \"type\": \"adjuster_reminder\", \"title\": \"Adjuster meeting tomorrow\", \"link_type\": \"claim\", \"link_id\": $('Split Out 24h Claims').item.json.id, \"channels_sent\": [\"in_app\", \"sms\"]} }}",
+        "options": {}
+      },
+      "id": "insert-24h-notification",
+      "name": "Insert 24h Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Split Out 24h Claims').item.json.id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"adjuster_meeting_reminder_sent\": true} }}",
+        "options": {}
+      },
+      "id": "mark-24h-sent",
+      "name": "Mark 24h Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        500
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Deliberately placed AFTER the SMS attempt, not before \u2014 marking sent before a genuinely failed send would permanently suppress a real reminder that never went out."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8-17 * * *"
+            }
+          ]
+        }
+      },
+      "id": "hourly-8am-5pm-trigger",
+      "name": "Hourly 8am-5pm Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        800
+      ],
+      "notes": "2h-ahead check, hourly during business hours (8 AM-5 PM)."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "adjuster_meeting_date",
+              "value": "=gte.{{$now.plus(1,'hours').toISO()}}"
+            },
+            {
+              "name": "adjuster_meeting_date",
+              "value": "=lte.{{$now.plus(3,'hours').toISO()}}"
+            },
+            {
+              "name": "adjuster_2hr_reminder_sent",
+              "value": "eq.false"
+            },
+            {
+              "name": "select",
+              "value": "id,contractor_id,customer_id,adjuster_meeting_date,adjuster_name"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-claims-needing-2h-reminder",
+      "name": "Fetch Claims Needing 2h Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        460,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "Independent of the 24h flag \u2014 a claim gets both reminders on their own schedules, checked against its own dedicated flag."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "return $input.all()[0].json.map((claim) => ({ json: claim }));"
+      },
+      "id": "split-out-2h-claims",
+      "name": "Split Out 2h Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        800
+      ],
+      "notes": "Same fan-out fix as the 24h branch above."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/contractors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$json.contractor_id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-contractor-(2h)",
+      "name": "Fetch Contractor (2h)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        680,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$vars.TWILIO_ACCOUNT_SID}}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "={{$json[0].phone}}"
+            },
+            {
+              "name": "From",
+              "value": "={{$vars.TWILIO_ALERT_NUMBER}}"
+            },
+            {
+              "name": "Body",
+              "value": "=Reminder: adjuster meeting in about 2 hours{{$('Split Out 2h Claims').item.json.adjuster_name ? ' with ' + $('Split Out 2h Claims').item.json.adjuster_name : ''}}."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-2h-sms",
+      "name": "Send 2h SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        800
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/notifications",
+        "sendHeaders": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"contractor_id\": $('Split Out 2h Claims').item.json.contractor_id, \"type\": \"adjuster_reminder\", \"title\": \"Adjuster meeting in 2 hours\", \"link_type\": \"claim\", \"link_id\": $('Split Out 2h Claims').item.json.id, \"channels_sent\": [\"in_app\", \"sms\"]} }}",
+        "options": {}
+      },
+      "id": "insert-2h-notification",
+      "name": "Insert 2h Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$vars.SUPABASE_URL}}/rest/v1/claims",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "=eq.{{$('Split Out 2h Claims').item.json.id}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$vars.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\"adjuster_2hr_reminder_sent\": true} }}",
+        "options": {}
+      },
+      "id": "mark-2h-sent",
+      "name": "Mark 2h Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Daily 7am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Claims Needing 24h Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Claims Needing 24h Reminder": {
+      "main": [
+        [
+          {
+            "node": "Split Out 24h Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out 24h Claims": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contractor (24h)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contractor (24h)": {
+      "main": [
+        [
+          {
+            "node": "Send 24h SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send 24h SMS": {
+      "main": [
+        [
+          {
+            "node": "Insert 24h Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert 24h Notification": {
+      "main": [
+        [
+          {
+            "node": "Mark 24h Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hourly 8am-5pm Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Claims Needing 2h Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Claims Needing 2h Reminder": {
+      "main": [
+        [
+          {
+            "node": "Split Out 2h Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out 2h Claims": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contractor (2h)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contractor (2h)": {
+      "main": [
+        [
+          {
+            "node": "Send 2h SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send 2h SMS": {
+      "main": [
+        [
+          {
+            "node": "Insert 2h Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert 2h Notification": {
+      "main": [
+        [
+          {
+            "node": "Mark 2h Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
